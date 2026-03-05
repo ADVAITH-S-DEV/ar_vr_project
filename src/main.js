@@ -285,6 +285,22 @@ AFRAME.registerComponent('katana-hand', {
                 }
                 rabbitComp.needsMatrixUpdate = true;
             }
+
+            // ── Also check if samurai was hit ──
+            if (window.samuraiEnemy && window.samuraiEnemy.state !== 'dying' && window.samuraiEnemy.state !== 'dead') {
+                const sam = window.samuraiEnemy;
+                const sp = sam.root.position;
+                const sdx = sp.x - camPos.x;
+                const sdz = sp.z - camPos.z;
+                const sdist = Math.sqrt(sdx * sdx + sdz * sdz);
+                if (sdist < strikeRange) {
+                    const sdot = (camDir.x * (sdx / sdist)) + (camDir.z * (sdz / sdist));
+                    if (sdot > 0.45) {
+                        sam.takeDamage(30); // 3 hits to kill the samurai
+                        updateScore(30);
+                    }
+                }
+            }
         };
 
         const swingSword = () => {
@@ -718,3 +734,262 @@ AFRAME.registerComponent('blood-particles', {
         }
     }
 });
+
+// ─── PLAYER HUD & HEALTH ───────────────────────────────────────────────────
+// Tracks player HP, shows red flash on hit, winner/death overlays
+AFRAME.registerComponent('player-hud', {
+    schema: { hp: { default: 150 }, maxHp: { default: 150 } },
+    init: function () {
+        window.playerHud = this;
+        this.hp = this.data.hp;
+        this.maxHp = this.data.maxHp;
+        this.flashTimer = 0;
+        this.updateUI();
+    },
+    takeDamage: function (amount) {
+        this.hp = Math.max(0, this.hp - amount);
+        this.updateUI();
+        this.flashTimer = 0.35; // paint screen red for 0.35s
+        if (this.hp <= 0) this.onDeath();
+    },
+    updateUI: function () {
+        const el = document.getElementById('player-hp');
+        if (el) {
+            const pct = Math.max(0, this.hp / this.maxHp);
+            const col = pct > 0.5 ? '#4caf50' : pct > 0.25 ? '#ff9800' : '#f44336';
+            el.innerHTML = `<span style="color:${col}">❤ ${this.hp} / ${this.maxHp}</span>`;
+        }
+    },
+    onDeath: function () {
+        const ov = document.getElementById('game-over-screen');
+        if (ov) { ov.style.display = 'flex'; }
+    },
+    tick: function (t, dt) {
+        if (this.flashTimer > 0) {
+            this.flashTimer -= dt / 1000;
+            const fl = document.getElementById('hit-flash');
+            if (fl) fl.style.opacity = Math.min(1, this.flashTimer * 3);
+        } else {
+            const fl = document.getElementById('hit-flash');
+            if (fl) fl.style.opacity = 0;
+        }
+    }
+});
+
+// ─── SLASH SPARKS (impact effect) ─────────────────────────────────────────
+AFRAME.registerComponent('slash-sparks', {
+    init: function () {
+        const THREE = AFRAME.THREE;
+        const scene = this.el.sceneEl.object3D;
+        this.POOL = 200;
+        this.pos = new Float32Array(this.POOL * 3).fill(-9999);
+        this.vel = Array.from({ length: this.POOL }, () => ({ x: 0, y: 0, z: 0 }));
+        this.life = new Float32Array(this.POOL);
+        this.slot = 0;
+        this.posAttr = new AFRAME.THREE.BufferAttribute(this.pos, 3);
+        this.posAttr.setUsage(THREE.DynamicDrawUsage);
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', this.posAttr);
+        const mat = new THREE.PointsMaterial({ color: 0xffaa00, size: 0.18, transparent: true, opacity: 0.9, depthWrite: false });
+        this.pts = new THREE.Points(geo, mat);
+        scene.add(this.pts);
+        window.slashSparks = this;
+    },
+    spawn: function (x, y, z) {
+        for (let k = 0; k < 30; k++) {
+            const i = this.slot % this.POOL; this.slot++;
+            this.pos[i * 3] = x; this.pos[i * 3 + 1] = y; this.pos[i * 3 + 2] = z;
+            this.vel[i] = { x: (Math.random() - 0.5) * 6, y: Math.random() * 5 + 1, z: (Math.random() - 0.5) * 6 };
+            this.life[i] = 0.6;
+        }
+        this.posAttr.needsUpdate = true;
+    },
+    tick: function (t, dtMs) {
+        const dt = dtMs / 1000; let dirty = false;
+        for (let i = 0; i < this.POOL; i++) {
+            if (this.life[i] <= 0) continue;
+            this.life[i] -= dt;
+            if (this.life[i] <= 0) { this.pos[i * 3] = this.pos[i * 3 + 1] = this.pos[i * 3 + 2] = -9999; }
+            else {
+                this.vel[i].y -= 8 * dt;
+                this.pos[i * 3] += this.vel[i].x * dt;
+                this.pos[i * 3 + 1] += this.vel[i].y * dt;
+                this.pos[i * 3 + 2] += this.vel[i].z * dt;
+            }
+            dirty = true;
+        }
+        if (dirty) this.posAttr.needsUpdate = true;
+    }
+});
+
+// ─── SAMURAI ENEMY ────────────────────────────────────────────────────────
+AFRAME.registerComponent('samurai-enemy', {
+    init: function () {
+        const THREE = AFRAME.THREE;
+        const scene = this.el.sceneEl.object3D;
+
+        // ── Build a blocky low-poly samurai body ──
+        const mat = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.8, flatShading: true });
+        const rMat = new THREE.MeshStandardMaterial({ color: 0xcc0000, roughness: 0.8, flatShading: true }); // armour
+        const sMat = new THREE.MeshStandardMaterial({ color: 0xdddddd, metalness: 0.9, roughness: 0.2 });   // blade
+
+        const part = (w, h, d, x, y, z, m) => {
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m || mat);
+            mesh.position.set(x, y, z); return mesh;
+        };
+
+        this.root = new THREE.Group();
+        this.torso = part(0.5, 0.55, 0.28, 0, 0.95, 0, rMat);
+        this.head = part(0.35, 0.35, 0.32, 0, 1.45, 0, mat);
+        this.armR = part(0.18, 0.5, 0.18, -0.36, 0.85, 0, rMat);
+        this.armL = part(0.18, 0.5, 0.18, 0.36, 0.85, 0, rMat);
+        this.legR = part(0.2, 0.5, 0.2, -0.15, 0.38, 0, mat);
+        this.legL = part(0.2, 0.5, 0.2, 0.15, 0.38, 0, mat);
+        // katana in right arm
+        this.blade = part(0.04, 0.8, 0.02, 0, -0.55, 0, sMat);
+        this.armR.add(this.blade);
+
+        this.root.add(this.torso, this.head, this.armR, this.armL, this.legR, this.legL);
+        scene.add(this.root);
+
+        // ── State machine ──
+        this.state = 'patrol';
+        this.hp = 90;
+        this.maxHp = 90;
+        this.speed = 2.2;
+        this.attackTimer = 0;
+        this.heading = Math.random() * Math.PI * 2;
+        this.patrolTimer = 3;
+        this.attackCooldown = 2.0; // seconds between strikes
+        this.deathTimer = 0;
+
+        // Place him 20-40m away at a random angle
+        const ang = Math.random() * Math.PI * 2;
+        const dist = 20 + Math.random() * 20;
+        this.root.position.set(Math.cos(ang) * dist, 0, Math.sin(ang) * dist);
+
+        // Expose globally so katana-hand's checkHit can reach it
+        window.samuraiEnemy = this;
+
+        // Health bar (HTML overlay element created dynamically)
+        this.hpBar = document.getElementById('samurai-hp-bar');
+    },
+
+    getPlayerPos: function () {
+        const cam = document.querySelector('a-camera');
+        return cam ? cam.object3D.position : new AFRAME.THREE.Vector3();
+    },
+
+    distToPlayer: function () {
+        const p = this.getPlayerPos();
+        const s = this.root.position;
+        const dx = p.x - s.x, dz = p.z - s.z;
+        return Math.sqrt(dx * dx + dz * dz);
+    },
+
+    facePlayer: function () {
+        const p = this.getPlayerPos();
+        this.root.lookAt(p.x, this.root.position.y, p.z);
+    },
+
+    takeDamage: function (amount) {
+        if (this.state === 'dead' || this.state === 'dying') return;
+        this.hp = Math.max(0, this.hp - amount);
+        this.updateHpBar();
+        // Spark at samurai centre
+        if (window.slashSparks) {
+            const p = this.root.position;
+            window.slashSparks.spawn(p.x, p.y + 1.0, p.z);
+        }
+        if (this.hp <= 0) this.startDying();
+    },
+
+    updateHpBar: function () {
+        const bar = document.getElementById('samurai-hp-fill');
+        if (bar) bar.style.width = Math.max(0, (this.hp / this.maxHp) * 100) + '%';
+        const lbl = document.getElementById('samurai-hp-label');
+        if (lbl) lbl.innerText = this.hp + ' / ' + this.maxHp;
+    },
+
+    startDying: function () {
+        this.state = 'dying';
+        this.deathTimer = 0;
+        // Show winner screen after 1.5s
+        setTimeout(() => {
+            const w = document.getElementById('winner-screen');
+            if (w) w.style.display = 'flex';
+        }, 1500);
+    },
+
+    tick: function (time, dtMs) {
+        const dt = dtMs / 1000;
+        const p = this.root.position;
+
+        if (this.state === 'dying') {
+            this.deathTimer += dt;
+            const t = Math.min(this.deathTimer / 1.5, 1);
+            this.root.rotation.z = t * Math.PI * 0.5;    // tip sideways
+            this.root.position.y = -t * 0.3;
+            if (window.bloodParticles && Math.random() < 0.1)
+                window.bloodParticles.spawn(p.x, 0.1, p.z);
+            return;
+        }
+        if (this.state === 'dead') return;
+
+        const dist = this.distToPlayer();
+
+        // ── State transitions ──
+        if (dist < 18 && this.state === 'patrol') this.state = 'chase';
+        if (dist > 22 && this.state !== 'patrol') this.state = 'patrol';
+        if (dist < 2.2 && this.state === 'chase') this.state = 'attacking';
+        if (dist > 2.5 && this.state === 'attacking') this.state = 'chase';
+
+        // ── Behaviour ──
+        if (this.state === 'patrol') {
+            this.patrolTimer -= dt;
+            if (this.patrolTimer <= 0) {
+                this.heading += (Math.random() - 0.5) * Math.PI;
+                this.patrolTimer = 2 + Math.random() * 3;
+            }
+            p.x += Math.sin(this.heading) * this.speed * 0.5 * dt;
+            p.z += Math.cos(this.heading) * this.speed * 0.5 * dt;
+            this.root.rotation.y = this.heading;
+        }
+
+        if (this.state === 'chase') {
+            this.facePlayer();
+            const camPos = this.getPlayerPos();
+            const dx = camPos.x - p.x, dz = camPos.z - p.z;
+            const d = Math.sqrt(dx * dx + dz * dz) || 1;
+            p.x += (dx / d) * this.speed * dt;
+            p.z += (dz / d) * this.speed * dt;
+        }
+
+        if (this.state === 'attacking') {
+            this.facePlayer();
+            this.attackTimer += dt;
+            // Animate arm swing periodically
+            const swing = Math.sin(this.attackTimer * 5) * 0.8;
+            this.armR.rotation.x = swing;
+
+            if (this.attackTimer >= this.attackCooldown) {
+                this.attackTimer = 0;
+                // Deal damage to player
+                if (window.playerHud) window.playerHud.takeDamage(25);
+                // Sparks on player hit (at camera position)
+                if (window.slashSparks) {
+                    const cp = this.getPlayerPos();
+                    window.slashSparks.spawn(cp.x, cp.y, cp.z);
+                }
+            }
+        }
+
+        // Leg animation while moving
+        if (this.state !== 'attacking') {
+            const legSwing = Math.sin(time * 0.005) * 0.5;
+            this.legR.rotation.x = legSwing;
+            this.legL.rotation.x = -legSwing;
+        }
+    }
+});
+

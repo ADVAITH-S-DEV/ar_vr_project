@@ -27,7 +27,6 @@
             color: #fff;
             font-family: sans-serif;
             z-index: 9999;
-            /* Ensure it stays above A-Frame UI */
         }
 
         #ui-overlay h1 {
@@ -57,31 +56,169 @@
             transform: scale(0.95);
         }
 
-        #score-display {
+        /* ── In-game HUD ── */
+        .hud-panel {
             position: absolute;
+            font-family: monospace;
+            z-index: 9999;
+            display: none;
+        }
+
+        #score-display {
             top: 20px;
             left: 20px;
             color: #fff;
-            font-family: monospace;
-            font-size: 2rem;
+            font-size: 1.8rem;
             text-shadow: 2px 2px 4px #000;
-            z-index: 9999;
+        }
+
+        #player-hp-bar {
+            bottom: 30px;
+            left: 20px;
+        }
+
+        #player-hp-bar label {
+            color: #4caf50;
+            font-size: 1rem;
+        }
+
+        #player-hp {
+            font-size: 1.4rem;
+        }
+
+        #samurai-bar {
+            top: 20px;
+            right: 20px;
+            text-align: right;
+        }
+
+        #samurai-bar label {
+            color: #ff4444;
+            font-size: 0.9rem;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+
+        #samurai-hp-label {
+            color: #ff4444;
+            font-size: 1.1rem;
+        }
+
+        #samurai-hp-track {
+            width: 220px;
+            height: 12px;
+            background: #333;
+            border-radius: 6px;
+            margin-top: 4px;
+            overflow: hidden;
+        }
+
+        #samurai-hp-fill {
+            height: 100%;
+            width: 100%;
+            background: linear-gradient(90deg, #ff2200, #ff6600);
+            border-radius: 6px;
+            transition: width 0.15s;
+        }
+
+        /* ── Screen flash on hit ── */
+        #hit-flash {
+            position: absolute;
+            inset: 0;
+            background: rgba(255, 0, 0, 0.45);
+            opacity: 0;
+            pointer-events: none;
+            z-index: 8000;
+            transition: opacity 0.05s;
+        }
+
+        /* ── Winner / Game Over overlays ── */
+        .end-screen {
+            position: absolute;
+            inset: 0;
             display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.75);
+            z-index: 10000;
+            font-family: sans-serif;
+        }
+
+        #winner-screen .msg {
+            font-size: 5rem;
+            color: #ffd700;
+            text-shadow: 0 0 30px #ffd700;
+            animation: pulse 1s infinite alternate;
+        }
+
+        #game-over-screen .msg {
+            font-size: 5rem;
+            color: #ff2200;
+            text-shadow: 0 0 30px #ff2200;
+            animation: pulse 1s infinite alternate;
+        }
+
+        .end-screen p {
+            color: #ccc;
+            font-size: 1.4rem;
+            margin-top: 1rem;
+        }
+
+        @keyframes pulse {
+            from {
+                transform: scale(1);
+            }
+
+            to {
+                transform: scale(1.08);
+            }
         }
     </style>
 </head>
 
 <body>
+    <!-- PLAY screen -->
     <div id="ui-overlay">
         <h1>VoxelRift WebXR</h1>
         <button id="play-btn">PLAY</button>
     </div>
 
-    <!-- UI Elements that appear AFTER clicking play -->
-    <div id="score-display">Score: 0</div>
+    <!-- Screen flash when hit -->
+    <div id="hit-flash"></div>
+
+    <!-- Score -->
+    <div id="score-display" class="hud-panel">Score: 0</div>
+
+    <!-- Player HP -->
+    <div id="player-hp-bar" class="hud-panel">
+        <label>YOU</label>
+        <div id="player-hp">❤ 150 / 150</div>
+    </div>
+
+    <!-- Samurai HP -->
+    <div id="samurai-bar" class="hud-panel">
+        <label>⚔ SAMURAI</label><br>
+        <span id="samurai-hp-label">90 / 90</span>
+        <div id="samurai-hp-track">
+            <div id="samurai-hp-fill"></div>
+        </div>
+    </div>
+
+    <!-- Winner overlay -->
+    <div id="winner-screen" class="end-screen">
+        <div class="msg">🏆 VICTORY!</div>
+        <p>The samurai has fallen. You are the master!</p>
+        <p>Score: <span id="win-score"></span></p>
+    </div>
+
+    <!-- Game over overlay -->
+    <div id="game-over-screen" class="end-screen">
+        <div class="msg">☠ DEFEATED</div>
+        <p>The samurai cut you down... Try again.</p>
+    </div>
 
     <!-- The declarative A-Frame Scene -->
-    <!-- It has the VR button built-in, but we overlay our Play Button first -->
     <a-scene id="game-scene" style="display: none;" background="color: #0f0b2f"
         fog="type: exponential; color: #0f0b2f; density: 0.002" renderer="antialias: true; colorManagement: true;">
 
@@ -91,8 +228,14 @@
         <!-- Optimized Roaming Rabbits (Instanced Mesh with procedural hopping) -->
         <a-entity instanced-rabbits></a-entity>
 
-        <!-- Blood Particle System - Pre-allocated pool of 500 particles -->
+        <!-- Blood Particle System -->
         <a-entity blood-particles></a-entity>
+
+        <!-- Slash Sparks (golden impact sparks) -->
+        <a-entity slash-sparks></a-entity>
+
+        <!-- Samurai Enemy AI -->
+        <a-entity samurai-enemy></a-entity>
 
         <!-- Lighting setup -->
         <a-light type="hemisphere" color="#e0eaff" groundColor="#444455" intensity="0.85"></a-light>
@@ -107,28 +250,38 @@
 
         <!-- Player Rig Setup -->
         <a-entity id="rig" position="0 0 0">
-            <!-- Camera / Head -->
-            <a-camera player-collider position="0 1.6 0" look-controls="pointerLockEnabled: true">
-                <!-- Katana + Minecraft Hand attached exactly as it was in Three.js -->
+            <!-- Camera / Head with HP tracking -->
+            <a-camera player-collider player-hud position="0 1.6 0" look-controls="pointerLockEnabled: true">
+                <!-- Katana + Minecraft Hand -->
                 <a-entity katana-hand position="0.3 -0.2 -0.6" rotation="-45 0 22.5"></a-entity>
             </a-camera>
 
-            <!-- WebXR Controllers bindings (for later physics/events in VR) -->
+            <!-- WebXR Controllers bindings -->
             <a-entity laser-controls="hand: right"></a-entity>
             <a-entity laser-controls="hand: left"></a-entity>
         </a-entity>
     </a-scene>
 
     <script>
+        const allHud = document.querySelectorAll('.hud-panel');
+
         document.getElementById('play-btn').addEventListener('click', () => {
             document.getElementById('ui-overlay').style.display = 'none';
-            // Show A-Frame scene
             document.getElementById('game-scene').style.display = 'block';
-            document.getElementById('score-display').style.display = 'block';
+            allHud.forEach(el => el.style.display = 'block');
 
-            // Request pointer lock for standard FPS controls (look-controls)
+            // Request pointer lock for standard FPS controls
             const sceneEl = document.querySelector('a-scene');
-            sceneEl.canvas.requestPointerLock();
+            sceneEl.addEventListener('loaded', () => {
+                sceneEl.canvas.requestPointerLock();
+            }, { once: true });
+            if (sceneEl.hasLoaded) sceneEl.canvas.requestPointerLock();
+        });
+
+        // Show final score on winner screen
+        document.getElementById('winner-screen').addEventListener('transitionend', () => {
+            const ws = document.getElementById('win-score');
+            if (ws && window.gameScore !== undefined) ws.innerText = window.gameScore;
         });
     </script>
 </body>
