@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VoxelRift WebXR</title>
+    <!-- Use A-Frame via CDN -->
+    <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+
+    <!-- Load our custom components -->
+    <script src="../src/main.js"></script>
+
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #000;
+        }
+
+        #ui-overlay {
+            position: absolute;
+            top: 50%;
+            width: 100%;
+            text-align: center;
+            transform: translateY(-50%);
+            color: #fff;
+            font-family: sans-serif;
+            z-index: 9999;
+            /* Ensure it stays above A-Frame UI */
+        }
+
+        #ui-overlay h1 {
+            text-shadow: 2px 2px 4px #000;
+            font-size: 3rem;
+            margin-bottom: 2rem;
+        }
+
+        #play-btn {
+            padding: 15px 40px;
+            font-size: 1.5rem;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            transition: background 0.3s, transform 0.1s;
+        }
+
+        #play-btn:hover {
+            background: #45a049;
+            transform: scale(1.05);
+        }
+
+        #play-btn:active {
+            transform: scale(0.95);
+        }
+
+        #score-display {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #fff;
+            font-family: monospace;
+            font-size: 2rem;
+            text-shadow: 2px 2px 4px #000;
+            z-index: 9999;
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="ui-overlay">
+        <h1>VoxelRift WebXR</h1>
+        <button id="play-btn">PLAY</button>
+    </div>
+
+    <!-- UI Elements that appear AFTER clicking play -->
+    <div id="score-display">Score: 0</div>
+
+    <!-- The declarative A-Frame Scene -->
+    <!-- It has the VR button built-in, but we overlay our Play Button first -->
+    <a-scene id="game-scene" style="display: none;" background="color: #0f0b2f"
+        fog="type: exponential; color: #0f0b2f; density: 0.002" renderer="antialias: true; colorManagement: true;">
+
+        <!-- Optimized Environment Generation (Instanced Meshes for O(1) draw calls) -->
+        <a-entity optimized-environment></a-entity>
+
+        <!-- Optimized Roaming Rabbits (Instanced Mesh with procedural hopping) -->
+        <a-entity instanced-rabbits></a-entity>
+
+        <!-- Blood Particle System - Pre-allocated pool of 500 particles -->
+        <a-entity blood-particles></a-entity>
+
+        <!-- Lighting setup -->
+        <a-light type="hemisphere" color="#e0eaff" groundColor="#444455" intensity="0.85"></a-light>
+        <a-light type="directional" color="#ffffff" intensity="1.2" position="100 150 -200"></a-light>
+
+        <!-- The Full Moon -->
+        <a-sphere position="100 150 -200" radius="25" color="#ffffff" material="shader: flat"></a-sphere>
+
+        <!-- The Vibrantly Colored Ground with Procedural Grass -->
+        <a-plane procedural-grass position="0 0 0" rotation="-90 0 0" width="500" height="500"
+            color="#3d7a26"></a-plane>
+
+        <!-- Player Rig Setup -->
+        <a-entity id="rig" position="0 0 0">
+            <!-- Camera / Head -->
+            <a-camera player-collider position="0 1.6 0" look-controls="pointerLockEnabled: true">
+                <!-- Katana + Minecraft Hand attached exactly as it was in Three.js -->
+                <a-entity katana-hand position="0.3 -0.2 -0.6" rotation="-45 0 22.5"></a-entity>
+            </a-camera>
+
+            <!-- WebXR Controllers bindings (for later physics/events in VR) -->
+            <a-entity laser-controls="hand: right"></a-entity>
+            <a-entity laser-controls="hand: left"></a-entity>
+        </a-entity>
+    </a-scene>
+
+    <script>
+        document.getElementById('play-btn').addEventListener('click', () => {
+            document.getElementById('ui-overlay').style.display = 'none';
+            // Show A-Frame scene
+            document.getElementById('game-scene').style.display = 'block';
+            document.getElementById('score-display').style.display = 'block';
+
+            // Request pointer lock for standard FPS controls (look-controls)
+            const sceneEl = document.querySelector('a-scene');
+            sceneEl.canvas.requestPointerLock();
+        });
+    </script>
+</body>
+
+</html>
